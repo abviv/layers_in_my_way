@@ -39,12 +39,14 @@ def cross_attn_inputs():
 # ---------------------------------------------------------------------------
 
 def test_self_attention_output_shape(model, self_attn_inputs):
+    """SDPA self-attention should preserve the query tensor shape."""
     q, k, v = self_attn_inputs
     out = model(q, k, v)
     assert out.shape == q.shape
 
 
 def test_cross_attention_output_shape(model, cross_attn_inputs):
+    """SDPA cross-attention should still emit one output vector per query token."""
     q, k, v = cross_attn_inputs
     out = model(q, k, v)
     assert out.shape == q.shape
@@ -55,6 +57,7 @@ def test_cross_attention_output_shape(model, cross_attn_inputs):
 # ---------------------------------------------------------------------------
 
 def test_all_valid_mask_equals_no_mask(model, cross_attn_inputs):
+    """A fully valid mask should be equivalent to leaving the SDPA mask unset."""
     q, k, v = cross_attn_inputs
     mask = torch.ones(B, S_KV, dtype=torch.bool)
 
@@ -64,6 +67,7 @@ def test_all_valid_mask_equals_no_mask(model, cross_attn_inputs):
 
 
 def test_partial_mask_output_shape(model, cross_attn_inputs):
+    """Masking some keys/values must not change the shape of the SDPA output."""
     q, k, v = cross_attn_inputs
     mask = torch.ones(B, S_KV, dtype=torch.bool)
     mask[0, 7:] = False
@@ -73,6 +77,7 @@ def test_partial_mask_output_shape(model, cross_attn_inputs):
 
 
 def test_all_invalid_mask_produces_finite_output(model, cross_attn_inputs):
+    """Fully masked SDPA rows should be sanitized so the final output stays finite."""
     q, k, v = cross_attn_inputs
     mask = torch.zeros(B, S_KV, dtype=torch.bool)
 
@@ -85,6 +90,7 @@ def test_all_invalid_mask_produces_finite_output(model, cross_attn_inputs):
 # ---------------------------------------------------------------------------
 
 def test_output_is_finite(model, self_attn_inputs):
+    """A normal SDPA forward pass should not produce NaN or Inf values."""
     q, k, v = self_attn_inputs
     out = model(q, k, v)
     assert torch.isfinite(out).all()
@@ -95,11 +101,13 @@ def test_output_is_finite(model, self_attn_inputs):
 # ---------------------------------------------------------------------------
 
 def test_inherits_from_multi_head_batched():
+    """The SDPA module should preserve the manual attention module interface via inheritance."""
     model = MultiHeadSDPA(emb_dim=D, num_heads=H)
     assert isinstance(model, MultiHeadBatched)
 
 
 def test_invalid_num_heads_raises():
+    """SDPA attention should reject head counts that do not evenly divide the embedding size."""
     with pytest.raises(AssertionError):
         MultiHeadSDPA(emb_dim=D, num_heads=6)
 
@@ -146,6 +154,7 @@ def test_matches_manual_attention_cross(cross_attn_inputs):
 # ---------------------------------------------------------------------------
 
 def test_gradient_flow(model, self_attn_inputs):
+    """Backward pass should populate gradients for all SDPA attention parameters."""
     q, k, v = self_attn_inputs
     out = model(q, k, v)
     out.sum().backward()

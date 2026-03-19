@@ -1,103 +1,191 @@
 import pytest
 import torch
+from torch.testing import assert_close
+
 from modules.attention import MultiHeadBatched
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
+B, S_SELF, S_Q, S_KV, D, H = 2, 10, 5, 10, 128, 8
+
 
 @pytest.fixture
 def model():
     torch.manual_seed(0)
-    return MultiHeadBatched(emb_dim=128, num_heads=8)
+    return MultiHeadBatched(emb_dim=D, num_heads=H)
+
+
+@pytest.fixture
+def identity_model():
+    model = MultiHeadBatched(emb_dim=4, num_heads=2)
+    with torch.no_grad():
+        eye = torch.eye(4)
+        for layer in (model.q_proj, model.k_proj, model.v_proj, model.out_proj):
+            layer.weight.copy_(eye)
+            layer.bias.zero_()
+    return model
 
 
 @pytest.fixture
 def self_attn_inputs():
-    """Query, key, value all share the same sequence length (self-attention)."""
-    B, S, D = 2, 10, 128
     torch.manual_seed(1)
-    q = torch.randn(B, S, D)
-    k = torch.randn(B, S, D)
-    v = torch.randn(B, S, D)
+    q = torch.randn(B, S_SELF, D)
+    k = torch.randn(B, S_SELF, D)
+    v = torch.randn(B, S_SELF, D)
     return q, k, v
 
 
 @pytest.fixture
 def cross_attn_inputs():
-    """Query has a shorter sequence than key/value (cross-attention)."""
-    B, S_q, S_kv, D = 2, 5, 10, 128
     torch.manual_seed(1)
-    q = torch.randn(B, S_q, D)
-    k = torch.randn(B, S_kv, D)
-    v = torch.randn(B, S_kv, D)
+    q = torch.randn(B, S_Q, D)
+    k = torch.randn(B, S_KV, D)
+    v = torch.randn(B, S_KV, D)
     return q, k, v
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
 def test_self_attention_output_shape(model, self_attn_inputs):
-    """Output must have the same shape as the query: [B, S_q, emb_dim]."""
+    """Self-attention should preserve the query tensor shape."""
     q, k, v = self_attn_inputs
     out = model(q, k, v)
     assert out.shape == q.shape
 
 
 def test_cross_attention_output_shape(model, cross_attn_inputs):
-    """In cross-attention S_q != S_kv; output shape must still follow query."""
+    """Cross-attention should still return one output vector per query token."""
     q, k, v = cross_attn_inputs
     out = model(q, k, v)
     assert out.shape == q.shape
 
 
 def test_all_valid_mask_equals_no_mask(model, cross_attn_inputs):
-    """A mask of all True (all positions valid) should give the same result as no mask at all."""
+    """A fully valid mask should be equivalent to omitting the mask entirely."""
     q, k, v = cross_attn_inputs
-    B, S_kv = q.shape[0], k.shape[1]
-    mask = torch.ones(B, S_kv, dtype=torch.bool)  # every KV position is valid
+    mask = torch.ones(B, S_KV, dtype=torch.bool)
 
-    out_masked   = model(q, k, v, mask=mask)
+    out_masked = model(q, k, v, mask=mask)
     out_unmasked = model(q, k, v)
 
-    assert torch.allclose(out_masked, out_unmasked)
+    assert_close(out_masked, out_unmasked)
 
 
 def test_partial_mask_output_shape(model, cross_attn_inputs):
-    """Output shape must be correct even when some KV positions are masked out."""
+    """Masking some key/value positions must not change the output tensor shape."""
     q, k, v = cross_attn_inputs
-    B, S_kv = q.shape[0], k.shape[1]
-    mask = torch.ones(B, S_kv, dtype=torch.bool)
-    mask[0, 5:] = False  # mask the last 5 KV positions for batch item 0
+    mask = torch.ones(B, S_KV, dtype=torch.bool)
+    mask[0, 5:] = False
 
     out = model(q, k, v, mask=mask)
     assert out.shape == q.shape
 
 
 def test_invalid_num_heads_raises():
-    """emb_dim must be divisible by num_heads; otherwise an AssertionError is expected."""
+    """The module should reject head counts that do not evenly divide the embedding size."""
     with pytest.raises(AssertionError):
-        MultiHeadBatched(emb_dim=128, num_heads=6)  # 128 % 6 != 0
+        MultiHeadBatched(emb_dim=D, num_heads=6)
 
 
-def test_all_invalid_mask_produces_finite_output(model, cross_attn_inputs):
-    """When every KV position is masked, nan_to_num(0.0) after softmax zeros the
-    attention weights, so the output must be finite (no NaN / Inf)."""
+def test_all_invalid_mask_returns_output_bias(model, cross_attn_inputs):
+    """When every key is masked, attention contributes zeros and only the output bias remains."""
     q, k, v = cross_attn_inputs
-    B, S_kv = q.shape[0], k.shape[1]
-    mask = torch.zeros(B, S_kv, dtype=torch.bool)  # every KV position is invalid
+    mask = torch.zeros(B, S_KV, dtype=torch.bool)
 
     out = model(q, k, v, mask=mask)
-    assert torch.isfinite(out).all(), (
-        "Expected finite output when every KV position is masked: "
-        "nan_to_num(0.0) should replace NaN attention weights with zero."
-    )
+    expected = model.out_proj.bias.view(1, 1, -1).expand_as(out)
+
+    assert_close(out, expected)
 
 
 def test_output_is_finite(model, cross_attn_inputs):
-    """All output values must be finite (no NaN or Inf) for a well-formed input."""
+    """A normal forward pass should not produce NaN or Inf values."""
     q, k, v = cross_attn_inputs
     out = model(q, k, v)
     assert torch.isfinite(out).all()
+
+
+def test_masked_prefix_matches_trimmed_kv(model):
+    """Masking a suffix of keys/values should match running attention on the unmasked prefix only."""
+    torch.manual_seed(2)
+    q = torch.randn(1, 4, D)
+    k = torch.randn(1, 6, D)
+    v = torch.randn(1, 6, D)
+    mask = torch.tensor([[1, 1, 1, 0, 0, 0]], dtype=torch.bool)
+
+    out_masked = model(q, k, v, mask=mask)
+    out_trimmed = model(q, k[:, :3], v[:, :3])
+
+    assert_close(out_masked, out_trimmed)
+
+
+def test_single_valid_token_is_broadcast_to_every_query(identity_model):
+    """If exactly one value token is valid, every query should receive that same value vector."""
+    q = torch.tensor(
+        [[[1.0, 0.0, 2.0, -1.0], [0.5, 1.5, -0.5, 2.0], [-1.0, 2.0, 0.0, 1.0]]]
+    )
+    k = torch.tensor([[[1.0, 2.0, 3.0, 4.0], [-4.0, -3.0, -2.0, -1.0]]])
+    v = torch.tensor([[[10.0, 20.0, 30.0, 40.0], [5.0, 6.0, 7.0, 8.0]]])
+    mask = torch.tensor([[0, 1]], dtype=torch.bool)
+
+    out = identity_model(q, k, v, mask=mask)
+    expected = v[:, 1:2, :].expand(-1, q.shape[1], -1)
+
+    assert_close(out, expected)
+
+
+def test_mask_only_changes_masked_batch_item(model, cross_attn_inputs):
+    """A per-batch mask should only affect the batch element whose mask actually changed."""
+    q, k, v = cross_attn_inputs
+    mask = torch.ones(B, S_KV, dtype=torch.bool)
+    mask[0, 7:] = False
+
+    out_masked = model(q, k, v, mask=mask)
+    out_unmasked = model(q, k, v)
+
+    assert_close(out_masked[1], out_unmasked[1])
+
+
+def test_integer_and_boolean_masks_are_equivalent(model, cross_attn_inputs):
+    """The masking logic should treat integer and boolean validity masks the same way."""
+    q, k, v = cross_attn_inputs
+    bool_mask = torch.tensor(
+        [[1, 1, 1, 1, 0, 0, 0, 0, 1, 1], [1, 0, 1, 0, 1, 0, 1, 0, 1, 0]],
+        dtype=torch.bool,
+    )
+    int_mask = bool_mask.to(torch.int64)
+
+    out_bool = model(q, k, v, mask=bool_mask)
+    out_int = model(q, k, v, mask=int_mask)
+
+    assert_close(out_bool, out_int)
+
+
+def test_masked_value_positions_have_zero_gradient(model):
+    """Masked value positions should not receive gradient because they never contribute to the output."""
+    torch.manual_seed(3)
+    q = torch.randn(1, 4, D, requires_grad=True)
+    k = torch.randn(1, 6, D, requires_grad=True)
+    v = torch.randn(1, 6, D, requires_grad=True)
+    mask = torch.tensor([[1, 1, 1, 0, 0, 0]], dtype=torch.bool)
+
+    out = model(q, k, v, mask=mask)
+    out.sum().backward()
+
+    assert v.grad is not None
+    assert v.grad[:, :3].abs().sum() > 0
+    assert torch.count_nonzero(v.grad[:, 3:]) == 0
+
+
+def test_backward_populates_input_and_parameter_gradients(model, self_attn_inputs):
+    """Backward pass should populate finite gradients for both inputs and learned projections."""
+    q, k, v = (tensor.clone().requires_grad_() for tensor in self_attn_inputs)
+
+    out = model(q, k, v)
+    loss = out.square().mean()
+    loss.backward()
+
+    for tensor in (q, k, v):
+        assert tensor.grad is not None
+        assert torch.isfinite(tensor.grad).all()
+
+    for _, parameter in model.named_parameters():
+        assert parameter.grad is not None
+        assert torch.isfinite(parameter.grad).all()

@@ -52,6 +52,7 @@ def sources(h):
 
 class TestRMSNorm:
     def test_output_shape(self):
+        """RMSNorm should preserve the input tensor shape."""
         norm = RMSNorm(D)
         x = torch.randn(B, T, D)
         assert norm(x).shape == (B, T, D)
@@ -63,6 +64,7 @@ class TestRMSNorm:
         assert norm(x).shape == (4, 8, 3, D)
 
     def test_output_is_finite(self):
+        """RMS normalization should keep outputs finite for standard random inputs."""
         norm = RMSNorm(D)
         x = torch.randn(B, T, D)
         assert torch.isfinite(norm(x)).all()
@@ -89,11 +91,13 @@ class TestRMSNorm:
 
 class TestDummyLayers:
     def test_dummy_attn_shape(self):
+        """The dummy attention layer should preserve the input tensor shape."""
         layer = DummyAttn(D)
         x = torch.randn(B, T, D)
         assert layer(x).shape == (B, T, D)
 
     def test_dummy_mlp_shape(self):
+        """The dummy MLP layer should preserve the input tensor shape."""
         layer = DummyMLP(D)
         x = torch.randn(B, T, D)
         assert layer(x).shape == (B, T, D)
@@ -105,22 +109,27 @@ class TestDummyLayers:
 
 class TestStandardResiduals:
     def test_block_output_shape(self, h):
+        """A standard transformer block should preserve the hidden-state shape."""
         block = StandardTransformerBlock(D)
         assert block(h).shape == (B, T, D)
 
     def test_block_output_is_finite(self, h):
+        """A standard transformer block should not produce NaN or Inf values."""
         block = StandardTransformerBlock(D)
         assert torch.isfinite(block(h)).all()
 
     def test_model_output_shape(self, h):
+        """Stacking standard residual blocks should still preserve the hidden-state shape."""
         model = StandardResidualModel(D, num_transformer_blocks=4)
         assert model(h).shape == (B, T, D)
 
     def test_model_output_is_finite(self, h):
+        """The standard residual model should produce finite activations end to end."""
         model = StandardResidualModel(D, num_transformer_blocks=4)
         assert torch.isfinite(model(h)).all()
 
     def test_single_block_model(self, h):
+        """The standard residual model should also work when configured with a single block."""
         model = StandardResidualModel(D, num_transformer_blocks=1)
         assert model(h).shape == (B, T, D)
 
@@ -138,11 +147,13 @@ class TestFullAttnRes:
         return w, srcs, norm
 
     def test_output_shape(self):
+        """full_attn_res should return one residual tensor with the same shape as each source."""
         w, srcs, norm = self._make_inputs(3)
         out = full_attn_res(w, srcs, norm)
         assert out.shape == (B, T, D)
 
     def test_output_is_finite(self):
+        """full_attn_res should remain numerically stable for normal random inputs."""
         w, srcs, norm = self._make_inputs(5)
         out = full_attn_res(w, srcs, norm)
         assert torch.isfinite(out).all()
@@ -188,6 +199,7 @@ class TestFullAttnRes:
         assert torch.allclose(sums, torch.ones(B, T), atol=1e-5)
 
     def test_more_sources_still_correct_shape(self):
+        """Adding more source tensors should not change the output tensor shape."""
         w, srcs, norm = self._make_inputs(10)
         out = full_attn_res(w, srcs, norm)
         assert out.shape == (B, T, D)
@@ -206,12 +218,14 @@ class TestFullAttnRes_Block:
         assert len(sources_out) == 3  # 1 initial + 2 appended
 
     def test_new_sources_have_correct_shape(self, h):
+        """Every source tensor returned by the block should keep the model hidden-state shape."""
         block = FullAttnResTransformerBlock(D)
         sources_out = block([h.clone()])
         for s in sources_out:
             assert s.shape == (B, T, D)
 
     def test_sources_grow_across_multiple_blocks(self, h):
+        """Repeated full-attention residual blocks should append two sources per block."""
         n_blocks = 4
         blocks = [FullAttnResTransformerBlock(D) for _ in range(n_blocks)]
         sources = [h.clone()]
@@ -220,14 +234,17 @@ class TestFullAttnRes_Block:
         assert len(sources) == 1 + n_blocks * 2
 
     def test_model_output_shape(self, h):
+        """The full-attention residual model should preserve the hidden-state shape."""
         model = FullAttnResModel(D, num_transformer_blocks=4)
         assert model(h).shape == (B, T, D)
 
     def test_model_output_is_finite(self, h):
+        """The full-attention residual model should produce finite activations."""
         model = FullAttnResModel(D, num_transformer_blocks=4)
         assert torch.isfinite(model(h)).all()
 
     def test_model_single_block(self, h):
+        """The full-attention residual model should also run with a single block."""
         model = FullAttnResModel(D, num_transformer_blocks=1)
         assert model(h).shape == (B, T, D)
 
@@ -247,6 +264,7 @@ class TestFullAttnRes_Block:
 
 class TestBlockAttnRes:
     def test_output_shape(self):
+        """block_attn_res should return a tensor matching the shape of its residual sources."""
         norm = RMSNorm(D)
         w = torch.randn(D)
         completed = [torch.randn(B, T, D) for _ in range(2)]
@@ -255,6 +273,7 @@ class TestBlockAttnRes:
         assert out.shape == (B, T, D)
 
     def test_output_is_finite(self):
+        """block_attn_res should stay numerically finite for standard random inputs."""
         norm = RMSNorm(D)
         w = torch.randn(D)
         completed = [torch.randn(B, T, D) for _ in range(3)]
@@ -286,17 +305,20 @@ class TestBlockAttnRes_Block:
         return completed, partial, layer_in_block
 
     def test_forward_returns_three_values(self, h):
+        """A block-attention residual layer should return completed blocks, partial state, and offset."""
         block = BlockAttnResTransformerBlock(D, block_size=4, block_layer_offset=0)
         state = self._initial_state(h)
         result = block(*state)
         assert len(result) == 3
 
     def test_partial_block_shape(self, h):
+        """The partial block accumulator should have the same shape as the hidden state."""
         block = BlockAttnResTransformerBlock(D, block_size=4, block_layer_offset=0)
         completed, partial, layer_in_block = block(*self._initial_state(h))
         assert partial.shape == (B, T, D)
 
     def test_layer_in_block_increments(self, h):
+        """Each transformer block should advance the intra-block offset by two sublayers."""
         block_size = 6
         block = BlockAttnResTransformerBlock(D, block_size=block_size, block_layer_offset=0)
         completed, partial, lib = block(*self._initial_state(h))
@@ -329,14 +351,17 @@ class TestBlockAttnRes_Block:
         assert len(completed) == 2
 
     def test_model_output_shape(self, h):
+        """The block-attention residual model should preserve the hidden-state shape."""
         model = BlockAttnResModel(D, num_transformer_blocks=6, block_size=4)
         assert model(h).shape == (B, T, D)
 
     def test_model_output_is_finite(self, h):
+        """The block-attention residual model should produce finite activations."""
         model = BlockAttnResModel(D, num_transformer_blocks=6, block_size=4)
         assert torch.isfinite(model(h)).all()
 
     def test_model_single_block(self, h):
+        """The block-attention residual model should also work when only one logical block is used."""
         model = BlockAttnResModel(D, num_transformer_blocks=3, block_size=6)
         assert model(h).shape == (B, T, D)
 
@@ -372,13 +397,16 @@ class TestGradientFlow:
             assert p.grad is not None, f"No gradient for {name}"
 
     def test_standard_residual_grads(self, h):
+        """Standard residual models should backpropagate gradients to every learnable parameter."""
         model = StandardResidualModel(D, num_transformer_blocks=3)
         self._check_grads(model, h)
 
     def test_full_attn_res_grads(self, h):
+        """Full-attention residual models should backpropagate gradients to every learnable parameter."""
         model = FullAttnResModel(D, num_transformer_blocks=3)
         self._check_grads(model, h)
 
     def test_block_attn_res_grads(self, h):
+        """Block-attention residual models should backpropagate gradients to every learnable parameter."""
         model = BlockAttnResModel(D, num_transformer_blocks=6, block_size=4)
         self._check_grads(model, h)

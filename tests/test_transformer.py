@@ -28,11 +28,13 @@ def x():
 # ---------------------------------------------------------------------------
 
 def test_output_shape(block, x):
+    """A standard forward pass should preserve batch, sequence, and embedding dimensions."""
     out = block(x)
     assert out.shape == (B, S, D)
 
 
 def test_output_shape_different_seq_len(block):
+    """The block should accept different sequence lengths without changing feature size."""
     x = torch.randn(B, 32, D)
     out = block(x)
     assert out.shape == (B, 32, D)
@@ -43,6 +45,7 @@ def test_output_shape_different_seq_len(block):
 # ---------------------------------------------------------------------------
 
 def test_output_is_finite(block, x):
+    """Well-formed inputs should not produce NaN or Inf values."""
     out = block(x)
     assert torch.isfinite(out).all()
 
@@ -52,6 +55,7 @@ def test_output_is_finite(block, x):
 # ---------------------------------------------------------------------------
 
 def test_uses_layernorm():
+    """The transformer block should expose two LayerNorm modules for pre-norm residuals."""
     block = TransformerBlock(emb_dim=D, num_heads=H)
     assert isinstance(block.norm1, nn.LayerNorm)
     assert isinstance(block.norm2, nn.LayerNorm)
@@ -80,6 +84,7 @@ def test_residual_connection(x):
 # ---------------------------------------------------------------------------
 
 def test_with_mask(block, x):
+    """Applying a mask should still return one output vector per input token."""
     mask = torch.ones(B, S, dtype=torch.bool)
     mask[0, 8:] = False
     out = block(x, mask=mask)
@@ -87,6 +92,7 @@ def test_with_mask(block, x):
 
 
 def test_all_valid_mask_equals_no_mask(x):
+    """A fully valid mask should behave the same as running the block without a mask."""
     torch.manual_seed(0)
     block = TransformerBlock(emb_dim=D, num_heads=H, dropout_p=0.0)
     block.eval()
@@ -102,6 +108,7 @@ def test_all_valid_mask_equals_no_mask(x):
 # ---------------------------------------------------------------------------
 
 def test_stacked_blocks(x):
+    """Multiple transformer blocks should compose cleanly while preserving shape and finiteness."""
     torch.manual_seed(0)
     blocks = nn.ModuleList([
         TransformerBlock(emb_dim=D, num_heads=H, dropout_p=0.0) for _ in range(4)
@@ -119,11 +126,13 @@ def test_stacked_blocks(x):
 # ---------------------------------------------------------------------------
 
 def test_invalid_num_heads_raises():
+    """Embedding size must be divisible by the head count for attention to split evenly."""
     with pytest.raises(AssertionError):
         TransformerBlock(emb_dim=D, num_heads=5)  # 64 % 5 != 0
 
 
 def test_custom_mlp_hidden_dim(x):
+    """Providing an explicit MLP hidden size should not change the outer tensor shape."""
     block = TransformerBlock(emb_dim=D, num_heads=H, mlp_hidden_dim=D * 4, dropout_p=0.0)
     out = block(x)
     assert out.shape == (B, S, D)
@@ -134,6 +143,7 @@ def test_custom_mlp_hidden_dim(x):
 # ---------------------------------------------------------------------------
 
 def test_gradient_flow(block, x):
+    """Backward pass should populate gradients for every learnable parameter in the block."""
     out = block(x)
     out.sum().backward()
     for name, p in block.named_parameters():
