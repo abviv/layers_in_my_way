@@ -53,6 +53,7 @@ class MlpL(nn.Module):
     MLP architectures with flexible dimension specifications.
     Can handle expansion (e.g., 512 -> 2048 -> 512 -> 256) or compression patterns.
     Dims are automatically derived from the fc_dims list specified during the init.
+    Using from HPTR paper.
 
     in_features = fc_dims[0]
     out_features = fc_dims[-1]
