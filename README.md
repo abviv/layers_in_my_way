@@ -35,6 +35,13 @@ python kimi_res_attn.py
 ```
 
 
+## Setup
+
+```bash
+conda env create -f environment.yml
+conda activate torch_gpu
+```
+
 ## Tests
 Repo is structured from the test first principle. Write tests first and then write the blocks. In this way the chances of bugs are less and also keep the llms away from hallucination territory.
 
