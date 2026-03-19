@@ -149,6 +149,64 @@ def test_matches_manual_attention_cross(cross_attn_inputs):
     assert torch.allclose(out_manual, out_sdpa, atol=1e-5)
 
 
+def test_matches_manual_attention_with_mask(self_attn_inputs):
+    """Manual attention and SDPA should match for self-attention with a partial validity mask."""
+    torch.manual_seed(42)
+    manual = MultiHeadBatched(emb_dim=D, num_heads=H)
+    sdpa = MultiHeadSDPA(emb_dim=D, num_heads=H)
+    sdpa.load_state_dict(manual.state_dict())
+
+    q, k, v = self_attn_inputs
+    mask = torch.ones(B, S, dtype=torch.bool)
+    mask[0, 6:] = False
+    mask[1, 2] = False
+
+    manual.eval()
+    sdpa.eval()
+
+    out_manual = manual(q, k, v, mask=mask)
+    out_sdpa = sdpa(q, k, v, mask=mask)
+    assert torch.allclose(out_manual, out_sdpa, atol=1e-5)
+
+
+def test_matches_manual_attention_cross_with_mask(cross_attn_inputs):
+    """Manual attention and SDPA should match for cross-attention with a partial validity mask."""
+    torch.manual_seed(42)
+    manual = MultiHeadBatched(emb_dim=D, num_heads=H)
+    sdpa = MultiHeadSDPA(emb_dim=D, num_heads=H)
+    sdpa.load_state_dict(manual.state_dict())
+
+    q, k, v = cross_attn_inputs
+    mask = torch.ones(B, S_KV, dtype=torch.bool)
+    mask[0, 7:] = False
+    mask[1, 1::2] = False
+
+    manual.eval()
+    sdpa.eval()
+
+    out_manual = manual(q, k, v, mask=mask)
+    out_sdpa = sdpa(q, k, v, mask=mask)
+    assert torch.allclose(out_manual, out_sdpa, atol=1e-5)
+
+
+def test_matches_manual_attention_when_everything_is_masked(cross_attn_inputs):
+    """Manual attention and SDPA should agree even when every key/value position is masked out."""
+    torch.manual_seed(42)
+    manual = MultiHeadBatched(emb_dim=D, num_heads=H)
+    sdpa = MultiHeadSDPA(emb_dim=D, num_heads=H)
+    sdpa.load_state_dict(manual.state_dict())
+
+    q, k, v = cross_attn_inputs
+    mask = torch.zeros(B, S_KV, dtype=torch.bool)
+
+    manual.eval()
+    sdpa.eval()
+
+    out_manual = manual(q, k, v, mask=mask)
+    out_sdpa = sdpa(q, k, v, mask=mask)
+    assert torch.allclose(out_manual, out_sdpa, atol=1e-5)
+
+
 # ---------------------------------------------------------------------------
 # Gradient flow
 # ---------------------------------------------------------------------------
