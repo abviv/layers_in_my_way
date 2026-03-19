@@ -52,5 +52,41 @@ class MultiHeadBatched(nn.Module):
         # need conitgous since transpose can make the memory layout non contiguous and view only works on contiguous tensors
         out = out.transpose(1,2).contiguous().view(B, S_q, self.emb_dim) # [B, seq_len_q, emb_dim]
         out = self.out_proj(out)
-        
+
+        return out
+
+
+class MultiHeadSDPA(MultiHeadBatched):
+    """
+    Multi-head attention using F.scaled_dot_product_attention.
+    Same interface as MultiHeadBatched but uses fused SDPA kernels
+    (FlashAttention / memory-efficient attention) when available.
+    """
+
+    def forward(self, q, k, v, mask=None):
+        q = self.q_proj(q)
+        k = self.k_proj(k)
+        v = self.v_proj(v)
+
+        B, S_q, _ = q.shape
+        S_kv = k.shape[1]
+
+        q = q.view(B, S_q, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(B, S_kv, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(B, S_kv, self.num_heads, self.head_dim).transpose(1, 2)
+
+        # Convert mask: parent convention [B, S_kv] where 0=invalid
+        # SDPA bool mask: True=attend, False=ignore
+        attn_mask = None
+        if mask is not None:
+            attn_mask = (mask != 0).unsqueeze(1).unsqueeze(2)  # [B, 1, 1, S_kv]
+
+        # the newer version also supports gqa which is useful in the future.
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+        # Safety: zero out NaN from fully-masked rows (matches parent behavior)
+        out = torch.nan_to_num(out, nan=0.0)
+
+        out = out.transpose(1, 2).contiguous().view(B, S_q, self.emb_dim)
+        out = self.out_proj(out)
+
         return out
