@@ -1,4 +1,4 @@
-# layers_in_my_way
+# Layers In My Way 
 
 Personal reference repo — snippets and scripts I reach for when working on attention mechanisms and GPU kernels.
 
@@ -10,7 +10,7 @@ Personal reference repo — snippets and scripts I reach for when working on att
 
 A clean `MultiHeadBatched` PyTorch module supporting both self-attention and cross-attention with optional masking.
 
-- Handles asymmetric sequence lengths (S_q ≠ S_kv) for cross-attention
+- Handles asymmetric sequence lengths (S_q =/= S_kv) for cross-attention
 - Applies `nan_to_num` after softmax to guard against fully-masked rows
 - Standard scaled dot-product with learned Q/K/V/out projections
 
@@ -36,6 +36,7 @@ python kimi_res_attn.py
 
 
 ## Tests
+Repo is structured from the test first principle. Write tests first and then write the blocks. In this way the chances of bugs are less and also keep the llms away from hallucination territory.
 
 ```bash
 pytest
