@@ -1,6 +1,6 @@
 import pytest
 import torch
-from attention import MultiHeadBatched
+from modules.attention import MultiHeadBatched
 
 
 # ---------------------------------------------------------------------------

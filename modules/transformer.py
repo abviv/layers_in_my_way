@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
-from attention import MultiHeadSDPA
-from mlp import MlpS
+from .attention import MultiHeadSDPA
+from .mlp import MlpS
 
 
 class TransformerBlock(nn.Module):

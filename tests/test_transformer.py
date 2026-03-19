@@ -1,7 +1,7 @@
 import pytest
 import torch
 import torch.nn as nn
-from transformer import TransformerBlock
+from modules.transformer import TransformerBlock
 
 
 # ---------------------------------------------------------------------------
