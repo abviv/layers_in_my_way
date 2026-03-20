@@ -1,5 +1,9 @@
+import warnings
+
 import pytest
 import torch
+from torch.testing import assert_close
+
 from modules.attention import MultiHeadBatched, MultiHeadSDPA
 
 
@@ -76,13 +80,15 @@ def test_partial_mask_output_shape(model, cross_attn_inputs):
     assert out.shape == q.shape
 
 
-def test_all_invalid_mask_produces_finite_output(model, cross_attn_inputs):
-    """Fully masked SDPA rows should be sanitized so the final output stays finite."""
+def test_all_invalid_mask_returns_output_bias(model, cross_attn_inputs):
+    """When every key is masked, SDPA attention contributes zeros and only the output bias remains."""
     q, k, v = cross_attn_inputs
     mask = torch.zeros(B, S_KV, dtype=torch.bool)
 
     out = model(q, k, v, mask=mask)
-    assert torch.isfinite(out).all()
+    expected = model.out_proj.bias.view(1, 1, -1).expand_as(out)
+
+    assert_close(out, expected)
 
 
 # ---------------------------------------------------------------------------
@@ -218,3 +224,34 @@ def test_gradient_flow(model, self_attn_inputs):
     out.sum().backward()
     for name, p in model.named_parameters():
         assert p.grad is not None, f"No gradient for {name}"
+
+
+def test_fully_masked_batch_item_keeps_backward_finite(model):
+    """Backward should stay finite even if one batch item has every key/value position masked out."""
+    torch.manual_seed(4)
+    q = torch.randn(2, 4, D, requires_grad=True)
+    k = torch.randn(2, 6, D, requires_grad=True)
+    v = torch.randn(2, 6, D, requires_grad=True)
+    mask = torch.tensor(
+        [[0, 0, 0, 0, 0, 0], [1, 1, 1, 1, 1, 1]],
+        dtype=torch.bool,
+    )
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Anomaly Detection has been enabled.*",
+            category=UserWarning,
+        )
+        with torch.autograd.detect_anomaly(check_nan=True):
+            out = model(q, k, v, mask=mask)
+            loss = out.square().mean()
+            loss.backward()
+
+    for tensor in (q, k, v):
+        assert tensor.grad is not None
+        assert torch.isfinite(tensor.grad).all()
+
+    for _, parameter in model.named_parameters():
+        assert parameter.grad is not None
+        assert torch.isfinite(parameter.grad).all()

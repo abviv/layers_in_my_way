@@ -1,8 +1,10 @@
+import warnings
+
 import pytest
 import torch
 from torch.testing import assert_close
 
-from modules.attention import MultiHeadBatched
+from modules.attention import MultiHeadBatched, safe_mask
 
 
 B, S_SELF, S_Q, S_KV, D, H = 2, 10, 5, 10, 128, 8
@@ -55,6 +57,38 @@ def test_cross_attention_output_shape(model, cross_attn_inputs):
     q, k, v = cross_attn_inputs
     out = model(q, k, v)
     assert out.shape == q.shape
+
+
+def test_safe_mask_reopens_fully_invalid_rows():
+    """Fully invalid rows should be reopened so attention never sees an all-masked row."""
+    mask = torch.tensor([[0, 0, 0], [1, 0, 1]], dtype=torch.bool)
+
+    adjusted = safe_mask(mask)
+    expected = torch.tensor([[1, 1, 1], [1, 0, 1]], dtype=torch.bool)
+
+    assert_close(adjusted, expected)
+
+
+def test_safe_mask_leaves_partially_valid_rows_unchanged():
+    """Rows that already contain a valid key should not be modified."""
+    mask = torch.tensor([[1, 1, 0, 1], [0, 1, 0, 0]], dtype=torch.bool)
+
+    adjusted = safe_mask(mask)
+
+    assert_close(adjusted, mask)
+
+
+def test_safe_mask_treats_integer_and_boolean_masks_equally():
+    """safe_mask should normalize integer and boolean masks to the same boolean result."""
+    bool_mask = torch.tensor([[0, 0, 0], [1, 0, 1]], dtype=torch.bool)
+    int_mask = bool_mask.to(torch.int64)
+
+    adjusted_bool = safe_mask(bool_mask)
+    adjusted_int = safe_mask(int_mask)
+
+    assert adjusted_bool.dtype is torch.bool
+    assert adjusted_int.dtype is torch.bool
+    assert_close(adjusted_bool, adjusted_int)
 
 
 def test_all_valid_mask_equals_no_mask(model, cross_attn_inputs):
@@ -172,6 +206,39 @@ def test_masked_value_positions_have_zero_gradient(model):
     assert v.grad is not None
     assert v.grad[:, :3].abs().sum() > 0
     assert torch.count_nonzero(v.grad[:, 3:]) == 0
+
+
+def test_fully_masked_batch_item_keeps_backward_finite(model):
+    """Backward should stay finite even if one batch item has every key/value position masked out."""
+    torch.manual_seed(4)
+    q = torch.randn(2, 4, D, requires_grad=True)
+    k = torch.randn(2, 6, D, requires_grad=True)
+    v = torch.randn(2, 6, D, requires_grad=True)
+    mask = torch.tensor(
+        [[0, 0, 0, 0, 0, 0], [1, 1, 1, 1, 1, 1]],
+        dtype=torch.bool,
+    )
+
+    # A fully masked batch row is reopened before softmax and then zeroed after
+    # attention so anomaly detection stays quiet during backward.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Anomaly Detection has been enabled.*",
+            category=UserWarning,
+        )
+        with torch.autograd.detect_anomaly(check_nan=True):
+            out = model(q, k, v, mask=mask)
+            loss = out.square().mean()
+            loss.backward()
+
+    for tensor in (q, k, v):
+        assert tensor.grad is not None
+        assert torch.isfinite(tensor.grad).all()
+
+    for _, parameter in model.named_parameters():
+        assert parameter.grad is not None
+        assert torch.isfinite(parameter.grad).all()
 
 
 def test_backward_populates_input_and_parameter_gradients(model, self_attn_inputs):

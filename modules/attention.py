@@ -3,6 +3,13 @@ from torch import nn
 import torch.nn.functional as F
 
 
+def safe_mask(mask):
+    """Return a boolean validity mask with fully invalid rows temporarily reopened."""
+    valid_mask = mask != 0
+    all_invalid = ~valid_mask.any(dim=-1, keepdim=True)
+    return valid_mask | all_invalid
+
+
 class MultiHeadBatched(nn.Module):
     """
     A simple batched multi-head attention implementation which supports
@@ -39,11 +46,16 @@ class MultiHeadBatched(nn.Module):
         # doing the matmul in the head dimension is more efficient since it can be done in parallel across heads
         # also K.t() since the inner dim needs to be the same for matmul
         attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale # [B, num_heads, seq_len_q, seq_len_kv]
+        all_invalid = None
         if mask is not None:
-            mask = mask.unsqueeze(1).unsqueeze(1) 
-            attn = attn.masked_fill(mask == 0, float('-inf'))
-        
+            valid_mask = mask != 0
+            all_invalid = ~valid_mask.any(dim=-1, keepdim=True)
+            mask = safe_mask(mask).unsqueeze(1).unsqueeze(1)
+            attn = attn.masked_fill(~mask, float('-inf'))
+
         attn = F.softmax(attn, dim=-1)
+        if all_invalid is not None:
+            attn = attn.masked_fill(all_invalid.view(B, 1, 1, 1), 0.0)
 
         out = torch.matmul(attn, v) # [B, num_heads, seq_len_q, head_dim]
         # need conitgous since transpose can make the memory layout non contiguous and view only works on contiguous tensors
@@ -72,14 +84,18 @@ class MultiHeadSDPA(MultiHeadBatched):
         k = k.view(B, S_kv, self.num_heads, self.head_dim).transpose(1, 2)
         v = v.view(B, S_kv, self.num_heads, self.head_dim).transpose(1, 2)
 
-        # Convert mask: parent convention [B, S_kv] where 0=invalid
-        # SDPA bool mask: True=attend, False=ignore
+        # Mask convention: [B, S_kv] where nonzero=True means valid.
         attn_mask = None
+        all_invalid = None
         if mask is not None:
-            attn_mask = (mask != 0).unsqueeze(1).unsqueeze(2)  # [B, 1, 1, S_kv]
+            valid_mask = mask != 0
+            all_invalid = ~valid_mask.any(dim=-1, keepdim=True)
+            attn_mask = safe_mask(mask).unsqueeze(1).unsqueeze(2)  # [B, 1, 1, S_kv]
 
         # the newer version also supports gqa which is useful in the future.
         out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+        if all_invalid is not None:
+            out = out.masked_fill(all_invalid.view(B, 1, 1, 1), 0.0)
 
         out = out.transpose(1, 2).contiguous().view(B, S_q, self.emb_dim)
         out = self.out_proj(out)

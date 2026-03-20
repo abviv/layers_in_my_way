@@ -23,6 +23,7 @@ class TransformerBlock(nn.Module):
         activation_fn="gelu",
     ):
         super().__init__()
+        self.is_crossattention = False
         self.norm1 = nn.LayerNorm(emb_dim)
         self.attn = MultiHeadSDPA(emb_dim, num_heads)
         self.drop1 = nn.Dropout(dropout_p)
@@ -37,15 +38,34 @@ class TransformerBlock(nn.Module):
         )
         self.drop2 = nn.Dropout(dropout_p)
 
-    def forward(self, x, mask=None):
-        # Self-attention sublayer with pre-norm
-        normed = self.norm1(x)
-        x = x + self.drop1(self.attn(normed, normed, normed, mask=mask))
+    def forward(self, q, k=None, v=None, mask=None):
+        """
+        Supports both self-attention (k,v=None) and cross-attention (k,v provided).
+        Explicit self.is_crossattention flag is needed for brevity
+        
+        Args:
+            q: [B, seq_len_q, emb_dim]
+            k: [B, seq_len_kv, emb_dim] or None for self-attention
+            v: [B, seq_len_kv, emb_dim] or None for self-attention
+            mask: [B, seq_len_kv] boolean validity mask where True=valid, False=masked
+
+        """
+
+        normed_q = self.norm1(q)
+        
+        if self.is_crossattention and k is not None and v is not None:
+            normed_k = self.norm1(k)
+            normed_v = self.norm1(v)
+        else:
+            normed_k = normed_q
+            normed_v = normed_q
+
+        q = q + self.drop1(self.attn(normed_q, normed_k, normed_v, mask=mask))
 
         # MLP sublayer with pre-norm
-        x = x + self.drop2(self.mlp(self.norm2(x)))
+        q = q + self.drop2(self.mlp(self.norm2(q)))
 
-        return x
+        return q
 
 
 if __name__ == "__main__":
