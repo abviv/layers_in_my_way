@@ -21,9 +21,10 @@ class TransformerBlock(nn.Module):
         mlp_hidden_dim=None,
         dropout_p=0.1,
         activation_fn="gelu",
+        is_crossattention=False,
     ):
         super().__init__()
-        self.is_crossattention = False
+        self.is_crossattention = is_crossattention
         self.norm1 = nn.LayerNorm(emb_dim)
         self.attn = MultiHeadSDPA(emb_dim, num_heads)
         self.drop1 = nn.Dropout(dropout_p)
