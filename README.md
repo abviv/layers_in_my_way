@@ -1,39 +1,80 @@
-# Layers In My Way 
+# Layers In My Way
 
-Personal reference repo — snippets and scripts I reach for when working on attention mechanisms and GPU kernels.
+Personal reference repo for PyTorch building blocks around attention, transformer variants, residual-routing ideas, and a small gMLP implementation.
 
----
+## Currently Supported
 
-## Contents
+### `modules/attention.py`
 
-### `attention.py` — MultiHead Attention
+Multi-head attention with two interchangeable implementations:
 
-A clean `MultiHeadBatched` PyTorch module supporting both self-attention and cross-attention with optional masking.
+- `MultiHeadBatched`: manual scaled dot-product attention
+- `MultiHeadSDPA`: `torch.nn.functional.scaled_dot_product_attention` backend
+- `safe_mask(mask)`: public helper for converting a `[B, S_kv]` validity mask into a backward-safe mask
 
-- Handles asymmetric sequence lengths (S_q =/= S_kv) for cross-attention
-- Applies `nan_to_num` after softmax to guard against fully-masked rows
-- Standard scaled dot-product with learned Q/K/V/out projections
+Supported behavior:
 
-### `kimi_res_attn.py` — Attention Residuals
+- self-attention and true cross-attention
+- different query and key/value sequence lengths
+- boolean or integer validity masks with shape `[B, S_kv]`
+- fully masked key/value rows without NaNs in backward
+- fully masked rows contributing zero attention signal, so the final output falls back to the output projection bias
+- parity tests between the manual and SDPA implementations
 
-PyTorch reference implementation of the three residual connection schemes from the Kimi Team's [Attention Residuals](https://github.com/MoonshotAI/Attention-Residuals) paper (2026).
+### `modules/transformer.py`
+
+`TransformerBlock` is a pre-norm transformer block built from:
+
+- `MultiHeadSDPA` attention
+- residual connections
+- dropout
+- `MlpS` feed-forward block
+
+Supported behavior:
+
+- standard self-attention mode
+- cross-attention mode via `block.is_crossattention = True`
+- different `seq_len_q` and `seq_len_kv` in cross-attention
+- `[B, S_kv]` masks in both self-attention and cross-attention
+- backward-safe handling of fully masked key/value rows through the shared `safe_mask` logic
+
+### `modules/gmlp.py`
+
+Small gMLP reference implementation with:
+
+- `SpatialGatingUnit`
+- `gMLPBlock`
+
+Supported behavior:
+
+- residual gMLP block over `[B, seq_len, d_model]`
+- learnable spatial projection over the sequence dimension
+- deterministic near-identity SGU initialization
+
+### `modules/kimi_res_attn.py`
+
+PyTorch reference implementation of residual routing variants inspired by the Kimi Team's [Attention Residuals](https://github.com/MoonshotAI/Attention-Residuals) paper.
+
+Implemented variants:
 
 | Variant | Residual mechanism | Memory |
 |---|---|---|
 | Standard | `h = h + f(norm(h))` | O(d) |
-| Full AttnRes | Softmax over all L prior layer outputs | O(L·d) |
-| Block AttnRes | Softmax over N block summaries + partial | O(N·d) |
+| Full AttnRes | Softmax over all prior layer outputs | O(L·d) |
+| Block AttnRes | Softmax over completed block summaries + current partial block | O(N·d) |
 
-**Full Attention Residuals** — before each sub-layer, a learned pseudo-query `w_l ∈ ℝᵈ` attends over every prior layer output via softmax. Replaces the uniform residual sum with a dynamically weighted mix.
+Included components:
 
-**Block Attention Residuals** — groups layers into blocks of size S. Within a block, outputs accumulate via plain addition into a `partial_block`. Across blocks, the same inter-layer attention runs before every sub-layer but attends only over finalized block summaries and the current partial — O(N) sources instead of O(L).
+- `RMSNorm`
+- `StandardTransformerBlock` and `StandardResidualModel`
+- `FullAttnResTransformerBlock` and `FullAttnResModel`
+- `BlockAttnResTransformerBlock` and `BlockAttnResModel`
 
-Run the shape trace demo:
+Run the shape/demo script:
 
 ```bash
-python kimi_res_attn.py
+python modules/kimi_res_attn.py
 ```
-
 
 ## Setup
 
@@ -43,13 +84,17 @@ conda activate torch_gpu
 ```
 
 ## Tests
-Repo is structured from the test first principle. Write tests first and then write the blocks. In this way the chances of bugs are less and also keep the llms away from hallucination territory.
+
+The repo is organized test-first: each module has direct coverage for shape, masking, finiteness, and gradient behavior.
 
 ```bash
 pytest
 ```
 
-Tests live in `tests/` and cover:
+Current test coverage includes:
 
-- `test_attention.py` — `MultiHeadBatched` shape, masking, self/cross-attention correctness
-- `test_kimi_res_attn.py` — all three residual models: output shapes, finite values, gradient flow, block boundary transitions, attention weight normalization
+- `tests/test_attention.py` for manual attention, `safe_mask`, masking semantics, and backward stability
+- `tests/test_sdpa_attention.py` for SDPA attention parity and masked-row safety
+- `tests/test_transformer.py` for pre-norm transformer blocks, self/cross-attention, masks, and gradient flow
+- `tests/test_gmlp.py` for `SpatialGatingUnit` and `gMLPBlock`
+- `tests/test_kimi_res_attn.py` for all Attention Residuals variants, normalization, shape checks, and gradient flow
