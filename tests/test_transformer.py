@@ -1,3 +1,5 @@
+import warnings
+
 import pytest
 import torch
 import torch.nn as nn
@@ -38,6 +40,28 @@ def test_output_shape_different_seq_len(block):
     x = torch.randn(B, 32, D)
     out = block(x)
     assert out.shape == (B, 32, D)
+
+
+def test_cross_attention_accepts_distinct_q_and_kv_lengths():
+    """With cross-attention enabled, the block should accept different query and key/value lengths."""
+    torch.manual_seed(2)
+    block = TransformerBlock(emb_dim=D, num_heads=H, dropout_p=0.0)
+    block.is_crossattention = True
+
+    q = torch.randn(B, 5, D)
+    k = torch.randn(B, 9, D)
+    v = torch.randn(B, 9, D)
+    alt_k = torch.randn(B, 9, D)
+    alt_v = torch.randn(B, 9, D)
+    mask = torch.ones(B, 9, dtype=torch.bool)
+    mask[0, 7:] = False
+
+    out = block(q, k, v, mask=mask)
+    out_with_alt_kv = block(q, alt_k, alt_v, mask=mask)
+
+    assert out.shape == q.shape
+    assert torch.isfinite(out).all()
+    assert not torch.allclose(out, out_with_alt_kv)
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +113,40 @@ def test_with_mask(block, x):
     mask[0, 8:] = False
     out = block(x, mask=mask)
     assert out.shape == (B, S, D)
+
+
+def test_cross_attention_fully_masked_row_keeps_backward_finite():
+    """Cross-attention should stay backward-safe when one batch item's KV mask is fully invalid."""
+    torch.manual_seed(3)
+    block = TransformerBlock(emb_dim=D, num_heads=H, dropout_p=0.0)
+    block.is_crossattention = True
+
+    q = torch.randn(B, 5, D, requires_grad=True)
+    k = torch.randn(B, 9, D, requires_grad=True)
+    v = torch.randn(B, 9, D, requires_grad=True)
+    mask = torch.tensor(
+        [[0, 0, 0, 0, 0, 0, 0, 0, 0], [1, 1, 1, 1, 1, 1, 1, 0, 0]],
+        dtype=torch.bool,
+    )
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Anomaly Detection has been enabled.*",
+            category=UserWarning,
+        )
+        with torch.autograd.detect_anomaly(check_nan=True):
+            out = block(q, k, v, mask=mask)
+            loss = out.square().mean()
+            loss.backward()
+
+    for tensor in (q, k, v):
+        assert tensor.grad is not None
+        assert torch.isfinite(tensor.grad).all()
+
+    for _, parameter in block.named_parameters():
+        assert parameter.grad is not None
+        assert torch.isfinite(parameter.grad).all()
 
 
 def test_all_valid_mask_equals_no_mask(x):
