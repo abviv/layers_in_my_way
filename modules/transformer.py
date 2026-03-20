@@ -37,7 +37,10 @@ class TransformerBlock(nn.Module):
             activation_fn=activation_fn,
         )
         self.drop2 = nn.Dropout(dropout_p)
-
+    
+        if self.is_crossattention:
+            self.norm_kv = nn.LayerNorm(emb_dim)
+    
     def forward(self, q, k=None, v=None, mask=None):
         """
         Supports both self-attention (k,v=None) and cross-attention (k,v provided).
@@ -54,8 +57,8 @@ class TransformerBlock(nn.Module):
         normed_q = self.norm1(q)
         
         if self.is_crossattention and k is not None and v is not None:
-            normed_k = self.norm1(k)
-            normed_v = self.norm1(v)
+            normed_k = self.norm_kv(k)
+            normed_v = self.norm_kv(v)
         else:
             normed_k = normed_q
             normed_v = normed_q

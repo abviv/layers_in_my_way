@@ -13,6 +13,13 @@ from modules.transformer import TransformerBlock
 B, S, D, H = 2, 16, 64, 8
 
 
+def make_cross_attention_block(dropout_p=0.0):
+    block = TransformerBlock(emb_dim=D, num_heads=H, dropout_p=dropout_p)
+    block.is_crossattention = True
+    block.norm_kv = nn.LayerNorm(D)
+    return block
+
+
 @pytest.fixture
 def block():
     torch.manual_seed(0)
@@ -45,8 +52,7 @@ def test_output_shape_different_seq_len(block):
 def test_cross_attention_accepts_distinct_q_and_kv_lengths():
     """With cross-attention enabled, the block should accept different query and key/value lengths."""
     torch.manual_seed(2)
-    block = TransformerBlock(emb_dim=D, num_heads=H, dropout_p=0.0)
-    block.is_crossattention = True
+    block = make_cross_attention_block(dropout_p=0.0)
 
     q = torch.randn(B, 5, D)
     k = torch.randn(B, 9, D)
@@ -79,10 +85,11 @@ def test_output_is_finite(block, x):
 # ---------------------------------------------------------------------------
 
 def test_uses_layernorm():
-    """The transformer block should expose two LayerNorm modules for pre-norm residuals."""
+    """The default block should expose the self-attention and MLP pre-norm layers."""
     block = TransformerBlock(emb_dim=D, num_heads=H)
     assert isinstance(block.norm1, nn.LayerNorm)
     assert isinstance(block.norm2, nn.LayerNorm)
+    assert not hasattr(block, "norm_kv")
 
 
 def test_residual_connection(x):
@@ -118,8 +125,7 @@ def test_with_mask(block, x):
 def test_cross_attention_fully_masked_row_keeps_backward_finite():
     """Cross-attention should stay backward-safe when one batch item's KV mask is fully invalid."""
     torch.manual_seed(3)
-    block = TransformerBlock(emb_dim=D, num_heads=H, dropout_p=0.0)
-    block.is_crossattention = True
+    block = make_cross_attention_block(dropout_p=0.0)
 
     q = torch.randn(B, 5, D, requires_grad=True)
     k = torch.randn(B, 9, D, requires_grad=True)
@@ -201,8 +207,27 @@ def test_custom_mlp_hidden_dim(x):
 # ---------------------------------------------------------------------------
 
 def test_gradient_flow(block, x):
-    """Backward pass should populate gradients for every learnable parameter in the block."""
+    """Backward pass should populate gradients for every learnable parameter used in self-attention mode."""
     out = block(x)
     out.sum().backward()
+    for name, p in block.named_parameters():
+        if name.startswith("norm_kv"):
+            continue
+        assert p.grad is not None, f"No gradient for {name}"
+
+
+def test_cross_attention_gradient_flow():
+    """Cross-attention mode should backpropagate through the dedicated KV normalization as well."""
+    torch.manual_seed(4)
+    block = make_cross_attention_block(dropout_p=0.0)
+
+    q = torch.randn(B, 5, D)
+    k = torch.randn(B, 9, D)
+    v = torch.randn(B, 9, D)
+    mask = torch.ones(B, 9, dtype=torch.bool)
+
+    out = block(q, k, v, mask=mask)
+    out.sum().backward()
+
     for name, p in block.named_parameters():
         assert p.grad is not None, f"No gradient for {name}"
