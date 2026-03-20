@@ -44,9 +44,6 @@ class MultiHeadBatched(nn.Module):
             attn = attn.masked_fill(mask == 0, float('-inf'))
         
         attn = F.softmax(attn, dim=-1)
-        # safety check when the mask makes all the KV positions invalid, the softmax will return NaN and we can
-        # replace it with 0 since it won't contribute to the output
-        attn = attn.nan_to_num(0.0)
 
         out = torch.matmul(attn, v) # [B, num_heads, seq_len_q, head_dim]
         # need conitgous since transpose can make the memory layout non contiguous and view only works on contiguous tensors
@@ -83,8 +80,6 @@ class MultiHeadSDPA(MultiHeadBatched):
 
         # the newer version also supports gqa which is useful in the future.
         out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
-        # Safety: zero out NaN from fully-masked rows (matches parent behavior)
-        out = torch.nan_to_num(out, nan=0.0)
 
         out = out.transpose(1, 2).contiguous().view(B, S_q, self.emb_dim)
         out = self.out_proj(out)
