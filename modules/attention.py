@@ -4,7 +4,17 @@ import torch.nn.functional as F
 
 
 def safe_mask(mask):
-    """Return a boolean validity mask with fully invalid rows temporarily reopened."""
+    """Return a boolean validity mask with fully invalid rows temporarily reopened.
+    
+    1. This is required for handling the case where all the KV pairs are masked for a given query
+    which happens rarely but can cause NaNs in attention if not handled since the softmax would be
+    over an all -inf vector. By reopening fully invalid rows, we ensure that attention always has
+    at least one valid key to attend to, and the all-invalid rows can be masked out after softmax
+    
+    2. There is a wasted computation here but it is neglible and also since we apply _masked_fill after 
+    softmax, the all-invalid rows will end up with zero attention weights so they won't contribute
+    to the output. 
+    """
     valid_mask = mask != 0
     all_invalid = ~valid_mask.any(dim=-1, keepdim=True)
     return valid_mask | all_invalid
