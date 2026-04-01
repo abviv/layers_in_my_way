@@ -248,6 +248,20 @@ class TestFullAttnRes_Block:
         model = FullAttnResModel(D, num_transformer_blocks=1)
         assert model(h).shape == (B, T, D)
 
+    def test_model_applies_final_aggregation(self, h):
+        """The model output should aggregate all sources, not just return the last one."""
+        model = FullAttnResModel(D, num_transformer_blocks=1)
+
+        with torch.no_grad():
+            model.blocks[0].attn.proj.weight.zero_()
+            model.blocks[0].mlp.proj.weight.zero_()
+            model.out_res_query.zero_()
+            model.out_res_norm.weight.fill_(1.0)
+
+        out = model(h)
+        expected = h / 3
+        assert torch.allclose(out, expected, atol=1e-5)
+
     def test_model_has_more_params_than_standard(self, h):
         """Full AttnRes adds query vectors and extra norms per layer."""
         n = 4

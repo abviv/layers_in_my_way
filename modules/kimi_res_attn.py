@@ -152,12 +152,14 @@ class FullAttnResModel(nn.Module):
         self.blocks = nn.ModuleList(
             [FullAttnResTransformerBlock(d) for _ in range(num_transformer_blocks)]
         )
+        self.out_res_query = nn.Parameter(torch.zeros(d))
+        self.out_res_norm = RMSNorm(d)
 
     def forward(self, h: torch.Tensor) -> torch.Tensor:
         sources: list[torch.Tensor] = [h]
         for block in self.blocks:
             sources = block(sources)
-        return sources[-1]
+        return full_attn_res(self.out_res_query, sources, self.out_res_norm)
 
 
 # Block Attention Residuals
@@ -271,6 +273,8 @@ class BlockAttnResModel(nn.Module):
             [BlockAttnResTransformerBlock(d, block_size, i * 2)
              for i in range(num_transformer_blocks)]
         )
+        self.out_res_query = nn.Parameter(torch.zeros(d))
+        self.out_res_norm = RMSNorm(d)
 
     def forward(self, h: torch.Tensor) -> torch.Tensor:
         completed_blocks: list[torch.Tensor] = [h]
@@ -285,13 +289,7 @@ class BlockAttnResModel(nn.Module):
         if partial_block is not None:
             completed_blocks.append(partial_block)
 
-        V_final = torch.stack(completed_blocks, dim=0)
-        w_out = self.blocks[-1].mlp_res_query
-        norm_out = self.blocks[-1].mlp_res_norm
-        K_final = norm_out(V_final)
-        logits = torch.einsum("d, n b t d -> n b t", w_out, K_final)
-        alpha = logits.softmax(dim=0)
-        return torch.einsum("n b t, n b t d -> b t d", alpha, V_final)
+        return full_attn_res(self.out_res_query, completed_blocks, self.out_res_norm)
 
 
 def main():
@@ -330,12 +328,15 @@ def main():
         print(f"        K = RMSNorm(V)           : [{num_src_pre_attn}, {B}, {T}, {d}]")
         print(f"        logits = einsum(w_l, K)  : [{num_src_pre_attn}, {B}, {T}]")
         print(f"        alpha  = softmax(logits) : [{num_src_pre_attn}, {B}, {T}]")
-        print(f"        h_l    = einsum(α, V)    : [{B}, {T}, {d}]")
+        print(f"        h_l    = einsum(alpha, V)    : [{B}, {T}, {d}]")
         print(f"      Attn(h_l)                  : [{B}, {T}, {d}]  → sources len={num_src_pre_attn+1}")
         print(f"      Pre-MLP AttnRes:")
         print(f"        V = stack(sources)       : [{num_src_pre_mlp}, {B}, {T}, {d}]")
         print(f"        h_l                      : [{B}, {T}, {d}]")
         print(f"      MLP(h_l)                   : [{B}, {T}, {d}]  → sources len={num_src_pre_mlp+1}")
+    print(f"\n    Final aggregation:")
+    print(f"      V_final = stack(sources)   : [{1 + num_transformer_blocks * 2}, {B}, {T}, {d}]")
+    print(f"      h_out                      : [{B}, {T}, {d}]")
 
     out_full = model_full(x.clone())
     print(f"\n  Output: {list(out_full.shape)}, ||h_L|| mean: {out_full.norm(dim=-1).mean():.2f}")
